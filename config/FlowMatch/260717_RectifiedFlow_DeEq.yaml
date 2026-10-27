@@ -1,0 +1,113 @@
+# - Models/FlowMatch/train_RectifiedFlow_DeEq.py
+# 训练Rectified Flow模型进行3D ncct -> cta 的转换。
+
+# ======== 保存设置 ========
+save_name: 260717_RectifiedFlow_DeEq
+save_dir: /home/longkaixing/NCCT_CTA/model_save/FlowMatch # 保存目录
+save_ckpt_every: 10 # 记录N轮模型的轮次（此外，会额外保存一个最新模型lastest_model.pt作为双保险）
+
+# ======== 数据集设置 ========
+data_dir: /home/longkaixing/NCCT_CTA/data/3_ResampleVolume
+seed: 42 # 随机种子
+fold: 1  # 第 fold 折数据
+sampler: /home/longkaixing/NCCT_CTA/data/kfold_split_idx/260130_CTA2NCCT
+
+# - patch 采样
+vol_size: [448, 448, 96]      # 3D 图像逻辑尺寸
+slice_start: [0, 47]
+slice_count: 48  # patch的z轴长度
+patch_size: 112  # 训练 patch 边长
+patch_stride: 112  # 平面内 patch 的滑动步长
+grid_patch_num: 0  # 采样策略，从平面的规则网格中取4个（无重叠patch数量=(448//224)**2）
+random_patch_num: 4  # 全图范围内额外随机取4个patch，不受 patch_stride 限制，可重叠，增加数据多样性
+val_slice_start: [0, 47]  # slice 的起点范围
+val_slice_count: 48  # 验证时取的层数
+# - 灰度截断 & 归一
+hu_min: -1000
+hu_max: 1000
+norm_factor: equation
+# - 数据增强
+augment: true
+augment_prob: 0.5
+
+# ======== 训练设置 ========
+max_epoch: 150
+lr: 0.0001   # 1e-4
+bs: 2
+lr_decay: 40  # 每过 N 轮次学习率下降。(学习率变化次数)
+ema_update_every: 1  # 每 N 轮更新EMA模型
+num_workers: 0
+max_grad_norm: 1.0  # 梯度裁剪
+device: 2  # 所用npu
+resume: 0  # 0=从头训练，1=自动断点恢复
+
+# ======== 可视化设置 ========
+val_every: 10  # 每 N 轮打印验证集损失
+vis_every: 10
+vis_samples_num: 4  # 可视化样本上限
+WL: 40  # 窗位  纵隔窗
+WW: 350  # 窗宽
+
+# ========= 网络结构 =========
+init_dim: 64  # Unet 维度
+base_channels: 1  # 输入(噪声)的基础维度
+cond_channels: 1  # 拼接的条件维度
+out_channels: 1  # 输出数据维度
+max_patches: 16
+dim_mults: [1,2,4,8]
+attn_heads: 4  # 多头注意力头数
+flash_attn: false
+cond_diffusion: true
+full_attn: [null, null, False, True]
+# - EDM 包装器
+num_sample_steps: 50
+clip_or_not: True
+clip_range: [-1,1]
+sigma_data: 0.5  # 目标数据的标准差 TODO 预测残差时需要调整。
+# - RectifiedFlow
+noise_scale: 1.0        # 噪声先验标准差，对应官方 init_noise_scale
+init_type: 'gaussian'   # 噪声初始化类型，对应官方 init_type
+T: 1.0                  # 时间上限（固定1.0，与官方一致）
+eps: 0.001              # 时间下限 1e-3
+use_ode_sampler: 'euler' # 'euler' | 'rk45'
+ode_tol: 0.00001  # RK45容差 1e-5
+sigma_variance: 0.0    # 扩散转换（0=纯ODE，>0=SDE）
+log_nfe: false         # 是否记录NFE到日志（可选）
+
+# ======== 变形等变配置 ========
+deformation:
+  mode: 'elastic'   # 'rigid' | 'elastic' | 'registration' | 'none'
+
+  # --- 刚性变形参数 (mode='rigid' 时生效) ---
+  rigid:
+    max_translation: 0.05
+    max_rotation: 5.0
+    prob: 1.0
+
+  # --- 弹性变形参数 (mode='elastic' 时生效) ---
+  elastic:
+    max_displacement_pixels: 50.0  # 最大像素位移（硬约束，覆盖呼吸运动）
+    elastic_std: 0.3  # 高斯平滑标准差（相对于图像尺寸）
+    prob: 1.0  # 应用概率
+
+  # --- 配准网络参数 (mode='registration' 时生效) ---
+  registration:
+    ncc_window: 9           # NCC 局部窗口
+    ssv_steps: 7            # Scaling-and-squaring 迭代次数
+    max_disp: 0.5         # 最大归一化位移，默认50% patch尺寸
+
+# ======== 损失函数配置 ========
+loss_config:
+  pixel:
+    enabled: true  # 代码中已配置，但并不通过loss_fn进行计算。这里开启只是为了损失的记录。
+    weight: 1.0
+    loss_type: 'MSE'
+  alignment:
+    enabled: true
+    weight: 5.0
+  registration_ncc:  # NCC 配准损失权重
+    enabled: false
+    weight: 10.0
+  registration_smooth:  # 变形场平滑权重
+    enabled: false
+    weight: 10.0
